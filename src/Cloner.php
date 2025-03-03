@@ -3,6 +3,7 @@
 // Deps
 use Illuminate\Contracts\Events\Dispatcher as Events;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * Core class that traverses a model's relationships and replicates model
@@ -45,9 +46,17 @@ class Cloner {
 	 * @return \Illuminate\Database\Eloquent\Model The new model instance
 	 */
 	public function duplicate($model, $relation = null, $attr = null) {
-		$clone = $this->cloneModel($model);
+		$newlyCloned = false;
+		$existingClone = $this->fetchExistingClone($model);
 
-		$this->dispatchOnCloningEvent($clone, $relation, $model,null, $attr);
+		if(filled($existingClone))
+		{
+			$clone = $existingClone;
+		}else{
+			$clone = $this->cloneModel($model);
+			$newlyCloned = true;
+			$this->dispatchOnCloningEvent($clone, $relation, $model,null, $attr);
+		}
 
 		if ($relation) {
 			if (!is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
@@ -57,12 +66,15 @@ class Cloner {
 			$clone->save();
 		}
 
-		$this->duplicateAttachments($model, $clone);
-		$clone->save();
-
-		$this->cloneRelations($model, $clone);
-
-		$this->dispatchOnClonedEvent($clone, $model);
+		if($newlyCloned)
+		{
+			$this->duplicateAttachments($model, $clone);
+			$clone->save();
+	
+			$this->cloneRelations($model, $clone);
+	
+			$this->dispatchOnClonedEvent($clone, $model);	
+		}
 
 		return $clone;
 	}
@@ -93,7 +105,21 @@ class Cloner {
 			$model->getCloneExemptAttributes() : null;
 		$clone = $model->replicate($exempt);
 		if ($this->write_connection) $clone->setConnection($this->write_connection);
+
+		$cacheKey = "cloner-{$model->getTable()}-{$model->getKey()}";
+		Cache::put($cacheKey, $clone->getKey(), now()->addHours(24));
+
 		return $clone;
+	}
+
+	protected function fetchExistingClone($sourceModel): object|null
+	{
+		$cacheKey = "cloner-{$sourceModel->getTable()}-{$sourceModel->getKey()}";
+		if(!Cache::has($cacheKey)) return null;
+		
+		$existingClone = $sourceModel->newQuery()->find(Cache::get($cacheKey));
+		if(!$existingClone) return null;
+		return $existingClone;
 	}
 
 	/**

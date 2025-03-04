@@ -15,7 +15,6 @@ class ServiceProvider extends LaravelServiceProvider {
 	 * @return void
 	 */
 	public function register() {
-
 		// Instantiate main Cloner instance
 		$this->app->singleton('cloner', function($app) {
 			return new Cloner(
@@ -33,7 +32,6 @@ class ServiceProvider extends LaravelServiceProvider {
 				$app['upchuck.disk']
 			);
 		});
-
 	}
 
 	/**
@@ -46,6 +44,11 @@ class ServiceProvider extends LaravelServiceProvider {
 			'cloner',
 			'cloner.attachment-adapter',
 		];
+	}
+
+	public function boot() {
+		$this->loadMigrationsFrom(__DIR__.'/../database/migrations');
+
 	}
 
 }

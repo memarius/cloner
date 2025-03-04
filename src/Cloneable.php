@@ -2,11 +2,22 @@
 
 // Deps
 use App;
+use App\Models\ModelClone;
 
 /**
  * Mixin accessor methods, callbacks, and the duplicate() helper into models.
  */
 trait Cloneable {
+
+	public function modelClones()
+	{
+		return $this->morphMany(related: App\Models\ModelCloneProgress::class, name: 'source', type: 'model_type', id: 'source_id');
+	}
+
+	public function clonedBy()
+	{
+		return $this->morphOne(related: App\Models\ModelCloneProgress::class, name: 'clone', type: 'model_type', id: 'clone_id');	
+	}
 
 	/**
 	 * Return the list of attributes on this model that should be cloned
@@ -73,8 +84,8 @@ trait Cloneable {
 	 * @param  array $attr Extra attributes for each clone
 	 * @return \Illuminate\Database\Eloquent\Model The new, saved clone
 	 */
-	public function duplicate($attr = null) {
-		return App::make('cloner')->duplicate($this, null, $attr);
+	public function duplicate($attr = null, ?ModelClone $modelClone = null) {
+		return App::make('cloner')->duplicate($this, null, $attr, $modelClone);
 	}
 
 	/**

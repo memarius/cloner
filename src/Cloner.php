@@ -5,6 +5,7 @@
 use App\Models\ModelClone;
 use App\Models\ModelCloneProgress;
 use Illuminate\Contracts\Events\Dispatcher as Events;
+use Illuminate\Database\Eloquent\Relations\Pivot;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -30,7 +31,7 @@ class Cloner {
 	 */
 	private $write_connection;
 
-	private ModelClone|null $modelClone;
+	private ModelClone|null $modelClone = null;
 
 	/**
 	 * DI
@@ -51,10 +52,10 @@ class Cloner {
 	 * @param  array $attr Extra attributes for each clone
 	 * @return \Illuminate\Database\Eloquent\Model The new model instance
 	 */
-	public function duplicate($model, $relation = null, $attr = null, $modelClone = null) {
+	public function duplicate($model, $relation = null, $attr = null, ?ModelClone $modelClone = null) {
 		if($modelClone) $this->modelClone = $modelClone;
 
-		//Check if has been cloned
+		//Model is source model that has already been cloned; return existing clone
 		$existingClone = $this->fetchExistingClone($model);
 		if(filled($existingClone))
 		{
@@ -66,7 +67,8 @@ class Cloner {
 			return $existingClone;
 		}
 
-		if($this->modelClone && $this->isClone($model)){
+		if(filled($this->modelClone) && $this->isClone($model)){
+			//Model is cloned model that has already been cloned, return itself
 			if ($relation) {
 				if (!is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
 					$relation->save($model);
@@ -75,8 +77,9 @@ class Cloner {
 			return $model;
 		}
 
+		//uncloned model, do whole cloning process
 		$clone = $this->cloneModel($model);
-		$this->dispatchOnCloningEvent($clone, $relation, $model,null, $attr);
+		$this->dispatchOnCloningEvent($clone, $relation, $model, null, $attr);
 
 		if ($relation) {
 			if (!is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
@@ -89,7 +92,7 @@ class Cloner {
 		$this->duplicateAttachments($model, $clone);
 		$clone->save();
 
-		if($this->modelClone) {
+		if(filled($this->modelClone)) {
 			$this->modelClone->modelCloneProgresses()->create([
 				"model_type" => get_class($model),
 				"source_id" => $model->getKey(),
@@ -153,7 +156,7 @@ class Cloner {
 
 	protected function fetchExistingClone($sourceModel): object|null
 	{
-		if($this->modelClone)
+		if(filled($this->modelClone))
 		{
 			$cloneProgress = $this->modelClone->modelCloneProgresses()->where('source_id', $sourceModel->getKey())->first();
 			if(!$cloneProgress) return null;
@@ -244,43 +247,6 @@ class Cloner {
 		} else $this->duplicateDirectRelation($relation, $relation_name, $clone);
 	}
 
-	/**
-	 * Duplicate a many-to-many style relation where we are just attaching the
-	 * relation to the dupe
-	 *
-	 * @param  \Illuminate\Database\Eloquent\Relations\Relation $relation
-	 * @param  string $relation_name
-	 * @param  \Illuminate\Database\Eloquent\Model $clone
-	 * @return void
-	 */
-	protected function duplicatePivotedRelation($relation, $relation_name, $clone) {
-
-		// If duplicating between databases, do not duplicate relations. The related
-		// instance may not exist in the other database or could have a different
-		// primary key.
-		if ($this->write_connection) return;
-
-		// Loop trough current relations and attach to clone
-		$relation->as('pivot')->get()->each(function ($foreign) use ($clone, $relation_name) {
-			$pivot_attributes = Arr::except($foreign->pivot->getAttributes(), [
-				$foreign->pivot->getRelatedKey(),
-				$foreign->pivot->getForeignKey(),
-				$foreign->pivot->getCreatedAtColumn(),
-				$foreign->pivot->getUpdatedAtColumn()
-			]);
-
-			foreach (array_keys($pivot_attributes) as $attributeKey) {
-				$pivot_attributes[$attributeKey] = $foreign->pivot->getAttribute($attributeKey);
-			}
-
-			if ($foreign->pivot->incrementing) {
-				unset($pivot_attributes[$foreign->pivot->getKeyName()]);
-			}
-
-			$clone->$relation_name()->attach($foreign, $pivot_attributes);
-		});
-	}
-
 	protected function duplicatePivotedAndRelated($relation, $relation_name, $clone) {
 
 		// If duplicating between databases, do not duplicate relations. The related
@@ -289,36 +255,45 @@ class Cloner {
 		if ($this->write_connection) return;
 
 		// Loop trough current relations and attach to clone
-		$relation->as('pivot')->get()->each(function ($foreign) use ($clone, $relation_name) {
-			
-			//ToDo: check if pivot has been cloned already?
-			//dd($foreign);
-
+		$relation->as('pivot')->get()->each(function ($related) use ($clone, $relation_name) 
+		{
 			//duplicate if available, otherwise just copy
-			//$duplicatedForeign = method_exists($foreign, 'duplicate') ? $foreign->duplicate() : $this->cloneModel($foreign);
-			$duplicatedForeign = $this->duplicate($foreign);
-			$duplicatedForeign->save();
+			$duplicatedRelated = $this->duplicate($related);
+			$duplicatedRelated->save();
 
-
-			$pivot_attributes = Arr::except($foreign->pivot->getAttributes(), [
-				$foreign->pivot->getRelatedKey(),
-				$foreign->pivot->getForeignKey(),
-				$foreign->pivot->getCreatedAtColumn(),
-				$foreign->pivot->getUpdatedAtColumn()
-			]);
-
-			foreach (array_keys($pivot_attributes) as $attributeKey) {
-				$pivot_attributes[$attributeKey] = $foreign->pivot->getAttribute($attributeKey);
+			if($clone->$relation_name()->getPivotClass() == Pivot::class)
+			{
+				//Standard Pivot
+				$pivot_attributes = Arr::except($related->pivot->getAttributes(), [
+					$related->pivot->getRelatedKey(),
+					$related->pivot->getForeignKey(),
+					$related->pivot->getCreatedAtColumn(),
+					$related->pivot->getUpdatedAtColumn()
+				]);
+	
+				/*foreach (array_keys($pivot_attributes) as $attributeKey) {
+					$pivot_attributes[$attributeKey] = $foreign->pivot->getAttribute($attributeKey);
+				}*/
+	
+				if ($related->pivot->incrementing) {
+					unset($pivot_attributes[$related->pivot->getKeyName()]);
+				}
+	
+				$pivot_attributes = Arr::whereNotNull($pivot_attributes);
+	
+				//Check if this relationship has been cloned already by checking if it exists with the key of the duplicated related and the exact pivot attributes
+				if($clone->$relation_name()->withPivotValue($pivot_attributes)->where($related->pivot->getRelatedKey(), $duplicatedRelated->id)->exists()) return;
+	
+				$clone->$relation_name()->attach($duplicatedRelated, $pivot_attributes);
+			}else {
+				//Custom Pivot Class that could potentially have custom clone attributes/relationships itself
+				$fullPivotModel = $related->pivot->fresh();	//pivot might not have all attributes loaded from database before this. Could be moved to duplicate function(?)
+				$duplicatedPivot = $this->duplicate($fullPivotModel, false, [
+					$related->pivot->getForeignKey() => $clone->id,
+					$related->pivot->getRelatedKey() => $duplicatedRelated->id
+				]);
 			}
 
-			if ($foreign->pivot->incrementing) {
-				unset($pivot_attributes[$foreign->pivot->getKeyName()]);
-			}
-
-			//Check if this relationship has been cloned already by checking if it exists with the foreign key of the duplicated foreign and the exact pivot attributes
-			if($clone->$relation_name()->withPivotValue($pivot_attributes)->where($foreign->pivot->getForeignKey(), $duplicatedForeign->id)->exists()) return;
-
-			$clone->$relation_name()->attach($duplicatedForeign, $pivot_attributes);
 		});
 	}
 

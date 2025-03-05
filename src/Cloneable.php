@@ -84,7 +84,7 @@ trait Cloneable {
 	 * @param  array $attr Extra attributes for each clone
 	 * @return \Illuminate\Database\Eloquent\Model The new, saved clone
 	 */
-	public function duplicate($attr = null, ?ModelClone $modelClone = null) {
+	public function duplicate(mixed $attr = null, ?ModelClone $modelClone = null) {
 		return App::make('cloner')->duplicate($this, null, $attr, $modelClone);
 	}
 

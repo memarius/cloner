@@ -110,16 +110,7 @@ class Cloner {
 		$clone->save();
 		$this->cloneMedia($model, $clone);
 
-		if(filled($this->modelClone)) {
-			$this->modelClone->modelCloneProgresses()->create([
-				"model_type" => get_class($model),
-				"source_id" => $model->getKey(),
-				"clone_id" => $clone->getKey()
-			]);
-		} else {
-			$cacheKey = "cloner-{$model->getTable()}-{$model->getKey()}";
-			Cache::put($cacheKey, $clone->getKey(), now()->addHours(24));	
-		}
+		$this->saveCloneProcess($model, $clone);
 
 		$this->cloneRelations($model, $clone);
 
@@ -174,19 +165,47 @@ class Cloner {
 
 	protected function fetchExistingClone($sourceModel): object|null
 	{
+		$cacheKey = filled($this->modelClone) ? "cloner-{$this->modelClone->id}-{$sourceModel->getTable()}-{$sourceModel->getKey()}" : "cloner-{$sourceModel->getTable()}-{$sourceModel->getKey()}";
+		
+		if(Cache::has($cacheKey))
+		{
+			$existingClone = $sourceModel->newQuery()->find(Cache::get($cacheKey));
+			if(!$existingClone) return null;
+			return $existingClone;
+		}
+		
 		if(filled($this->modelClone))
 		{
-			$cloneProgress = $this->modelClone->modelCloneProgresses()->where('source_id', $sourceModel->getKey())->first();
+			$cloneProgress = $this->modelClone->modelCloneProgresses()->where([
+				['source_id', "=", $sourceModel->getKey()],
+				['model_type', "=", get_class($sourceModel)]
+			])->first();
 			if(!$cloneProgress) return null;
 			return $cloneProgress->clone;
 		}
-
-		$cacheKey = "cloner-{$sourceModel->getTable()}-{$sourceModel->getKey()}";
-		if(!Cache::has($cacheKey)) return null;
 		
-		$existingClone = $sourceModel->newQuery()->find(Cache::get($cacheKey));
-		if(!$existingClone) return null;
-		return $existingClone;
+		return null;
+	}
+
+	protected function saveCloneProcess($model, $clone)
+	{
+		if(filled($this->modelClone)) {
+			$this->modelClone->modelCloneProgresses()->create([
+				"model_type" => get_class($model),
+				"source_id" => $model->getKey(),
+				"clone_id" => $clone->getKey()
+			]);
+
+			$cacheKeyCloned = "cloner-{$this->modelClone->id}-{$model->getTable()}-{$model->getKey()}";
+			$cacheKeyClonedBy = "cloner-{$this->modelClone->id}-{$model->getTable()}-{$clone->getKey()}";
+
+		} else {
+			$cacheKeyCloned = "cloner-{$model->getTable()}-{$model->getKey()}";
+			$cacheKeyClonedBy = "cloner-{$model->getTable()}-{$clone->getKey()}";
+		}
+
+		Cache::put($cacheKeyCloned, $clone->getKey(), now()->addHours(24));
+		Cache::put($cacheKeyClonedBy, $model->getKey(), now()->addHours(24));
 	}
 
 	/**

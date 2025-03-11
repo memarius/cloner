@@ -7,6 +7,7 @@ use App\Models\ModelCloneProgress;
 use Illuminate\Contracts\Events\Dispatcher as Events;
 use Illuminate\Database\Eloquent\Relations\Pivot;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
@@ -38,10 +39,14 @@ class Cloner {
 	 *
 	 * @param AttachmentAdapter $attachment
 	 */
-	public function __construct(AttachmentAdapter $attachment = null,
-		Events $events = null) {
+	public function __construct(
+		?AttachmentAdapter $attachment = null,
+		?Events $events = null,
+		?ModelClone $modelClone = null
+	) {
 		$this->attachment = $attachment;
 		$this->events = $events;
+		$this->modelClone = $modelClone;
 	}
 
 	/**
@@ -53,7 +58,7 @@ class Cloner {
 	 * @return \Illuminate\Database\Eloquent\Model The new model instance
 	 */
 	public function duplicate($model, $relation = null, $attr = null, ?ModelClone $modelClone = null) {
-		if($modelClone) $this->modelClone = $modelClone;
+		if($modelClone && $modelClone->id) $this->modelClone = $modelClone;
 
 		//Model is source model that has already been cloned; return existing clone
 		$existingClone = $this->fetchExistingClone($model);
@@ -79,7 +84,20 @@ class Cloner {
 
 		//uncloned model, do whole cloning process
 		$clone = $this->cloneModel($model);
-		$this->dispatchOnCloningEvent($clone, $relation, $model, null, $attr);
+
+		//TODO if $model/$clone are Pivots && filled($attr), then ->fill($attr)
+
+		try {
+			$this->dispatchOnCloningEvent($clone, $relation, $model, null, $attr);
+		}catch(\Webmozart\Assert\InvalidArgumentException $e)
+		{
+			Log::error("Caught Webmozart Invalid Argument Exception", [
+				"clone" => $clone,
+				"model" => $model,
+				"relation" => $relation,
+				"error" => $e
+			]);
+		}
 
 		if ($relation) {
 			if (!is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
@@ -89,8 +107,8 @@ class Cloner {
 			$clone->save();
 		}
 
-		$this->duplicateAttachments($model, $clone);
 		$clone->save();
+		$this->cloneMedia($model, $clone);
 
 		if(filled($this->modelClone)) {
 			$this->modelClone->modelCloneProgresses()->create([
@@ -179,12 +197,26 @@ class Cloner {
 	 * @param  \Illuminate\Database\Eloquent\Model $clone
 	 * @return void
 	 */
-	protected function duplicateAttachments($model, $clone) {
-		if (!$this->attachment || !method_exists($clone, 'getCloneableFileAttributes')) return;
-		foreach($clone->getCloneableFileAttributes() as $attribute) {
-			if (!$original = $model->getAttribute($attribute)) continue;
-			$clone->setAttribute($attribute, $this->attachment->duplicate($original, $clone));
-		}
+	protected function cloneMedia($source, $clone) {
+		if(App::environment('local')) return;
+
+        if(!method_exists($source, 'getMedia')) return;
+
+        foreach($source->getMedia('*') as $mediaItem)
+        {
+            try {
+                $mediaItem->copy($clone, $mediaItem->collection_name, $mediaItem->disk);
+            }catch(\Exception $e)
+            {
+                Log::error("Could not copy MediaItem for class {$class}", [
+                    "mediaId" => $mediaItem->id,
+                    "sourceModelId" => $source->id,
+                    "clonedModelId" => $clone->id,
+                    "exception" => $e
+                ]);
+            }
+            
+        }
 	}
 
 	/**
@@ -227,7 +259,16 @@ class Cloner {
 	protected function cloneRelations($model, $clone) {
 		if (!method_exists($model, 'getCloneableRelations')) return;
 		foreach($model->getCloneableRelations() as $relation_name) {
-			$this->duplicateRelation($model, $relation_name, $clone);
+			try{
+				$this->duplicateRelation($model, $relation_name, $clone);
+			}catch(\Illuminate\Database\QueryException $e)
+			{
+				Log::error("Query Exception trying to duplicate Relation {$relation_name}", [
+					"model" => $model,
+					"clone" => $clone,
+					"exception" => $e
+				]);
+			}
 		}
 	}
 

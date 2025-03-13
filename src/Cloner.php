@@ -14,6 +14,8 @@ use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Database\Eloquent\Relations\Relation;
+use Illuminate\Support\Facades\DB;
+
 /**
  * Core class that traverses a model's relationships and replicates model
  * attributes
@@ -120,12 +122,11 @@ class Cloner {
 			$clone->save();
 		}
 
-		Model::withoutEvents(function () use ($clone) {
+		DB::transaction(function () use($clone, $model) {
 			$clone->save();
-		});
+			$this->saveCloneProcess($model, $clone);
+		}, 5);
 		
-		$this->saveCloneProcess($model, $clone);
-
 		//ToDo: Queue?
 		$this->cloneMedia($model, $clone);
 		if($recursive) $this->cloneRelations($model, $clone);
@@ -388,10 +389,10 @@ class Cloner {
 		$relation->get()->each(function($foreign) use ($clone, $relation_name, $relation) {
 			$this->checkBoundary($foreign, $clone, $relation, $relation_name);
 
-			$cloned_relation = $this->duplicate($foreign, $clone->$relation_name());
+			$clonedForeign = $this->duplicate($foreign, $clone->$relation_name());
 
 			if (is_a($clone->$relation_name(), 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
-				$clone->$relation_name()->associate($cloned_relation);
+				$clone->$relation_name()->associate($clonedForeign);
 				$clone->save();
 			}
 		});

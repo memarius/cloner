@@ -84,8 +84,14 @@ trait Cloneable {
 	 * @param  array $attr Extra attributes for each clone
 	 * @return \Illuminate\Database\Eloquent\Model The new, saved clone
 	 */
-	public function duplicate(mixed $attr = null, ?ModelClone $modelClone = null) {
-		return App::make('cloner')->duplicate($this, null, $attr, $modelClone);
+	public function duplicate(mixed $attr = null, ?ModelClone $modelClone = null, bool $recursive = true) {
+		return App::make('cloner')->duplicate(
+			model: $this, 
+			relation: null, 
+			attr: $attr, 
+			modelClone: $modelClone, 
+			recursive: $recursive
+		);
 	}
 
 	/**
@@ -108,7 +114,7 @@ trait Cloneable {
      * @param  array $attr Extra attributes for each clone
 	 * @return void
 	 */
-	public function onCloning($src, $child = null, $attr = null) {}
+	public function onCloning($src, $child = null, ?ModelClone $modelClone = null, $attr = null) {}
 
 	/**
 	 * A no-op callback that gets fired when a model is cloned and saved to the
@@ -117,6 +123,6 @@ trait Cloneable {
 	 * @param  \Illuminate\Database\Eloquent\Model $src
 	 * @return void
 	 */
-	public function onCloned($src) {}
+	public function onCloned($src, ?ModelClone $modelClone = null) {}
 
 }

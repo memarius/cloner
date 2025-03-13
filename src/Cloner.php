@@ -4,13 +4,16 @@
 
 use App\Models\ModelClone;
 use App\Models\ModelCloneProgress;
+use App\Models\PersonType;
+use App\Models\Team;
 use Illuminate\Contracts\Events\Dispatcher as Events;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\Pivot;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
-
+use Illuminate\Database\Eloquent\Relations\Relation;
 /**
  * Core class that traverses a model's relationships and replicates model
  * attributes
@@ -33,6 +36,8 @@ class Cloner {
 	private $write_connection;
 
 	private ModelClone|null $modelClone = null;
+
+	private Team|null $currentTeam = null;
 
 	/**
 	 * DI
@@ -57,8 +62,16 @@ class Cloner {
 	 * @param  array $attr Extra attributes for each clone
 	 * @return \Illuminate\Database\Eloquent\Model The new model instance
 	 */
-	public function duplicate($model, $relation = null, $attr = null, ?ModelClone $modelClone = null) {
+	public function duplicate(
+		object $model, 
+		null|string|Relation $relation = null, 
+		mixed $attr = null, 
+		?ModelClone $modelClone = null,
+		bool $recursive = true
+	) {
 		if($modelClone && $modelClone->id) $this->modelClone = $modelClone;
+
+		if(get_class($model) == Team::class && $model->id == 61) $this->currentTeam = $model;
 
 		//Model is source model that has already been cloned; return existing clone
 		$existingClone = $this->fetchExistingClone($model);
@@ -107,12 +120,15 @@ class Cloner {
 			$clone->save();
 		}
 
-		$clone->save();
-		$this->cloneMedia($model, $clone);
-
+		Model::withoutEvents(function () use ($clone) {
+			$clone->save();
+		});
+		
 		$this->saveCloneProcess($model, $clone);
 
-		$this->cloneRelations($model, $clone);
+		//ToDo: Queue?
+		$this->cloneMedia($model, $clone);
+		if($recursive) $this->cloneRelations($model, $clone);
 
 		$this->dispatchOnClonedEvent($clone, $model);
 
@@ -252,7 +268,7 @@ class Cloner {
 		if ($relation) $child = true;
         if($attr) $attr = json_decode(json_encode($attr), FALSE);
 		// Notify listeners via callback or event
-		if (method_exists($clone, 'onCloning')) $clone->onCloning($src, $child, $attr);
+		if (method_exists($clone, 'onCloning')) $clone->onCloning($src, $child, $this->modelClone ?? null, $attr);
 		$this->events->dispatch('cloner::cloning: '.get_class($src), [$clone, $src, $attr]);
 	}
 
@@ -264,7 +280,7 @@ class Cloner {
 	protected function dispatchOnClonedEvent($clone, $src)
 	{
 		// Notify listeners via callback or event
-		if (method_exists($clone, 'onCloned')) $clone->onCloned($src);
+		if (method_exists($clone, 'onCloned')) $clone->onCloned($src, $this->modelClone ?? null);
 		$this->events->dispatch('cloner::cloned: '.get_class($src), [$clone, $src]);
 	}
 
@@ -315,8 +331,10 @@ class Cloner {
 		if ($this->write_connection) return;
 
 		// Loop trough current relations and attach to clone
-		$relation->as('pivot')->get()->each(function ($related) use ($clone, $relation_name) 
+		$relation->as('pivot')->get()->each(function ($related) use ($clone, $relation_name, $relation) 
 		{
+			$this->checkBoundary($related, $clone, $relation, $relation_name);
+
 			//duplicate if available, otherwise just copy
 			$duplicatedRelated = $this->duplicate($related);
 			$duplicatedRelated->save();
@@ -367,13 +385,46 @@ class Cloner {
 	 * @return void
 	 */
 	protected function duplicateDirectRelation($relation, $relation_name, $clone) {
-		$relation->get()->each(function($foreign) use ($clone, $relation_name) {
+		$relation->get()->each(function($foreign) use ($clone, $relation_name, $relation) {
+			$this->checkBoundary($foreign, $clone, $relation, $relation_name);
+
 			$cloned_relation = $this->duplicate($foreign, $clone->$relation_name());
+
 			if (is_a($clone->$relation_name(), 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
 				$clone->$relation_name()->associate($cloned_relation);
 				$clone->save();
 			}
 		});
+	}
+
+	private function checkBoundary($foreign, $clone, $relation, $relation_name)
+	{
+		if($this->currentTeam && 
+			get_class($foreign) === get_class($this->currentTeam) && 
+			!$foreign->is($this->currentTeam) && 
+			!$foreign->is($this->currentTeam->modelClones()->where('model_clone_id', $this->modelClone->id)->first()->clone)
+		)
+		//if(get_class($foreign) == PersonType::class && $this->currentTeam && $foreign->id == 2255) 
+		{
+			Log::error("duplicatePivotedAndRelated: Cloning Team that is not supposed to be cloned.", [
+				"relation" => $relation,
+				"relationName" => $relation_name,
+				"clone" => $clone,
+				"related" => $foreign
+			]);
+			throw new \Error("Cloning Team that is not supposed to be cloned");
+		}
+
+		if(filled($foreign->team) && !$foreign->team->is($this->currentTeam) && !$foreign->team->is($this->currentTeam->modelClones()->where('model_clone_id', $this->modelClone->id)->first()->clone))
+		{
+			Log::error("Trying to duplicate a foreign that does not have the same team.", [
+				"relation" => $relation,
+				"relationName" => $relation_name,
+				"clone" => $clone,
+				"related" => $foreign
+			]);
+			throw new \Error("Cloning Foreign with different team");
+		}
 	}
 
 

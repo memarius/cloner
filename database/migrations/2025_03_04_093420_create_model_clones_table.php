@@ -15,6 +15,7 @@ return new class extends Migration
             $table->id();
             $table->timestamps();
             $table->foreignId("user_id")->constrained()->cascadeOnDelete();
+            $table->json("additional_attributes")->nullable()->comment("Additional information that can be retrieved 'globally' within the cloning process");
         });
     }
 

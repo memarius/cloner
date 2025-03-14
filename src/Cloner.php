@@ -39,8 +39,6 @@ class Cloner {
 
 	private ModelClone|null $modelClone = null;
 
-	private Team|null $currentTeam = null;
-
 	/**
 	 * DI
 	 *
@@ -73,18 +71,23 @@ class Cloner {
 	) {
 		if($modelClone && $modelClone->id) $this->modelClone = $modelClone;
 
-		if(get_class($model) == Team::class && $model->id == 61) $this->currentTeam = $model;
-
 		//Model is source model that has already been cloned; return existing clone
-		$existingClone = $this->fetchExistingClone($model);
-		if(filled($existingClone))
+		$existingModel = $this->fetchExistingClone($model);
+		
+		//Model should not be cloned but existing relations be kept
+		/*if(empty($existingModel) && $this->isCloneExempt($model)) 
+		{
+			$existingModel = $model;
+		}*/
+	
+		if(filled($existingModel))
 		{
 			if ($relation) {
 				if (!is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
-					$relation->save($existingClone);
+					$relation->save($existingModel);
 				}
 			}
-			return $existingClone;
+			return $existingModel;
 		}
 
 		if(filled($this->modelClone) && $this->isClone($model)){
@@ -114,18 +117,17 @@ class Cloner {
 			]);
 		}
 
-		if ($relation) {
-			if (!is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
-				$relation->save($clone);
+		DB::transaction(function () use($clone, $model, $relation) {
+			if ($relation) {
+				if (!is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
+					$relation->save($clone);
+				}
+			} else {
+				$clone->save();
 			}
-		} else {
-			$clone->save();
-		}
-
-		DB::transaction(function () use($clone, $model) {
-			$clone->save();
 			$this->saveCloneProcess($model, $clone);
 		}, 5);
+
 		
 		//ToDo: Queue?
 		$this->cloneMedia($model, $clone);
@@ -134,6 +136,16 @@ class Cloner {
 		$this->dispatchOnClonedEvent($clone, $model);
 
 		return $clone;
+	}
+
+	private function isCloneExempt($model)
+	{
+		if(!$this->modelClone) return false;
+
+		return $this->modelClone->cloneExempts(get_class($model))->where([
+			["exemptable_id", $model->getKey()],
+			["exemptable_type", get_class($model)]
+		])->exists();
 	}
 
 	/*
@@ -334,7 +346,7 @@ class Cloner {
 		// Loop trough current relations and attach to clone
 		$relation->as('pivot')->get()->each(function ($related) use ($clone, $relation_name, $relation) 
 		{
-			$this->checkBoundary($related, $clone, $relation, $relation_name);
+			//$this->checkBoundary($related, $clone, $relation, $relation_name);
 
 			//duplicate if available, otherwise just copy
 			$duplicatedRelated = $this->duplicate($related);
@@ -387,7 +399,7 @@ class Cloner {
 	 */
 	protected function duplicateDirectRelation($relation, $relation_name, $clone) {
 		$relation->get()->each(function($foreign) use ($clone, $relation_name, $relation) {
-			$this->checkBoundary($foreign, $clone, $relation, $relation_name);
+			//$this->checkBoundary($foreign, $clone, $relation, $relation_name);
 
 			$clonedForeign = $this->duplicate($foreign, $clone->$relation_name());
 
@@ -398,6 +410,7 @@ class Cloner {
 		});
 	}
 
+	/*
 	private function checkBoundary($foreign, $clone, $relation, $relation_name)
 	{
 		if($this->currentTeam && 
@@ -427,6 +440,7 @@ class Cloner {
 			throw new \Error("Cloning Foreign with different team");
 		}
 	}
+		*/
 
 
 	private function morphModelClones($model)

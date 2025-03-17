@@ -82,20 +82,16 @@ class Cloner {
 	
 		if(filled($existingModel))
 		{
-			if ($relation) {
-				if (!is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
-					$relation->save($existingModel);
-				}
+			if ($relation && !is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
+				$relation->save($existingModel);
 			}
 			return $existingModel;
 		}
 
 		if(filled($this->modelClone) && $this->isClone($model)){
 			//Model is cloned model that has already been cloned, return itself
-			if ($relation) {
-				if (!is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
-					$relation->save($model);
-				}
+			if ($relation && !is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
+				$relation->save($model);
 			}
 			return $model;
 		}
@@ -118,13 +114,12 @@ class Cloner {
 		}
 
 		DB::transaction(function () use($clone, $model, $relation) {
-			if ($relation) {
-				if (!is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
-					$relation->save($clone);
-				}
+			if ($relation && !is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
+				$relation->save($clone);
 			} else {
 				$clone->save();
 			}
+
 			$this->saveCloneProcess($model, $clone);
 		}, 5);
 
@@ -218,6 +213,10 @@ class Cloner {
 
 	protected function saveCloneProcess($model, $clone)
 	{
+		/*
+		*		TODO: $model/$clone can be of a class that is a pivot without incrementing - how will the clone progress be saved?
+		*
+		*/
 		if(filled($this->modelClone)) {
 			$this->modelClone->modelCloneProgresses()->create([
 				"model_type" => get_class($model),
@@ -281,7 +280,7 @@ class Cloner {
 		if ($relation) $child = true;
         if($attr) $attr = json_decode(json_encode($attr), FALSE);
 		// Notify listeners via callback or event
-		if (method_exists($clone, 'onCloning')) $clone->onCloning($src, $child, $this->modelClone ?? null, $attr);
+		if (method_exists($clone, 'onCloning')) $clone->internalOnCloning($src, $child, $this->modelClone ?? null, $attr);
 		$this->events->dispatch('cloner::cloning: '.get_class($src), [$clone, $src, $attr]);
 	}
 
@@ -373,7 +372,7 @@ class Cloner {
 				$pivot_attributes = Arr::whereNotNull($pivot_attributes);
 	
 				//Check if this relationship has been cloned already by checking if it exists with the key of the duplicated related and the exact pivot attributes
-				if($clone->$relation_name()->withPivotValue($pivot_attributes)->where($related->pivot->getRelatedKey(), $duplicatedRelated->id)->exists()) return;
+				if($clone->$relation_name()->withPivotValue($pivot_attributes)->where($related->pivot->getTable() . "." . $related->pivot->getRelatedKey(), $duplicatedRelated->id)->exists()) return;
 	
 				$clone->$relation_name()->attach($duplicatedRelated, $pivot_attributes);
 			}else {

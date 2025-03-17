@@ -3,6 +3,7 @@
 // Deps
 use App;
 use App\Models\ModelClone;
+use Illuminate\Database\Eloquent\Relations\MorphToMany;
 
 /**
  * Mixin accessor methods, callbacks, and the duplicate() helper into models.
@@ -18,6 +19,12 @@ trait Cloneable {
 	{
 		return $this->morphOne(related: App\Models\ModelCloneProgress::class, name: 'clone', type: 'model_type', id: 'clone_id');	
 	}
+
+	public function cloneExcempted(): MorphToMany
+	{
+		return $this->morphToMany(ModelClone::class, 'model_clone_exemptable', 'model_clone_exemptable', 'exemptable_id', 'model_clone_id');
+	}
+
 
 	/**
 	 * Return the list of attributes on this model that should be cloned
@@ -62,8 +69,19 @@ trait Cloneable {
 	 * @return  array
 	 */
 	public function getCloneableRelations() {
-		if (!isset($this->cloneable_relations)) return [];
-		return $this->cloneable_relations;
+		$cloneableRelations = isset($this->cloneable_relations) ? $this->cloneable_relations : [];
+
+		$traitCloneableRelations = config("app.trait_cloneable_relations");
+
+		$usedTraits = class_uses($this);
+
+		foreach ($usedTraits as $trait) {
+			if (isset($traitCloneableRelations[$trait])) {
+				$cloneableRelations = array_merge($cloneableRelations, $traitCloneableRelations[$trait]);
+			}
+		}
+
+		return $cloneableRelations;
 	}
 
 	/**
@@ -76,7 +94,8 @@ trait Cloneable {
 		$relations = $this->getCloneableRelations();
 		if (in_array($relation, $relations)) return;
 		$relations[] = $relation;
-		$this->cloneable_relations = $relations;
+		$this->setAttribute('cloneable_relations', $relations);
+		//$this->cloneable_relations = $relations;
 	}
 
 	/**
@@ -115,6 +134,26 @@ trait Cloneable {
 	 * @return void
 	 */
 	public function onCloning($src, $child = null, ?ModelClone $modelClone = null, $attr = null) {}
+
+		/**
+	 * A no-op callback that gets fired when a model is cloning but before it gets
+	 * committed to the database
+	 *
+	 * @param  \Illuminate\Database\Eloquent\Model $src
+	 * @param  boolean $child
+     * @param  array $attr Extra attributes for each clone
+	 * @return void
+	 */
+	public function internalOnCloning($src, $child = null, ?ModelClone $modelClone = null, $attr = null) 
+	{
+		//Fill Pivot with new foreignKeys
+		if($this instanceof \Illuminate\Database\Eloquent\Relations\Pivot && filled($attr)){
+            $this->fill((array) $attr);
+		}
+
+		$this->onCloning($src, child: $child, modelClone: $modelClone, attr: $attr);
+	}
+
 
 	/**
 	 * A no-op callback that gets fired when a model is cloned and saved to the

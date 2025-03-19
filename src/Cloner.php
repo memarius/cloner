@@ -75,10 +75,10 @@ class Cloner {
 		$existingModel = $this->fetchExistingClone($model);
 		
 		//Model should not be cloned but existing relations be kept
-		/*if(empty($existingModel) && $this->isCloneExempt($model)) 
+		if(empty($existingModel) && $this->isCloneExempt($model)) 
 		{
 			$existingModel = $model;
-		}*/
+		}
 	
 		if(filled($existingModel))
 		{

@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Relations\MorphToMany;
  */
 trait Cloneable {
 
+
 	public function modelClones()
 	{
 		return $this->morphMany(related: App\Models\ModelCloneProgress::class, name: 'source', type: 'model_type', id: 'source_id');
@@ -20,7 +21,7 @@ trait Cloneable {
 		return $this->morphOne(related: App\Models\ModelCloneProgress::class, name: 'clone', type: 'model_type', id: 'clone_id');	
 	}
 
-	public function cloneExcempted(): MorphToMany
+	public function cloneExempted(): MorphToMany
 	{
 		return $this->morphToMany(ModelClone::class, 'model_clone_exemptable', 'model_clone_exemptable', 'exemptable_id', 'model_clone_id');
 	}

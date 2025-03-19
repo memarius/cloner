@@ -2,10 +2,13 @@
 
 // Deps
 
+use App\Models\Media;
 use App\Models\ModelClone;
 use App\Models\ModelCloneProgress;
 use App\Models\PersonType;
+use App\Models\ProgramType;
 use App\Models\Team;
+use App\Models\User;
 use Illuminate\Contracts\Events\Dispatcher as Events;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\Pivot;
@@ -14,7 +17,10 @@ use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Database\Eloquent\Relations\Relation;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
+
+use function PHPUnit\Framework\callback;
 
 /**
  * Core class that traverses a model's relationships and replicates model
@@ -39,6 +45,16 @@ class Cloner {
 
 	private ModelClone|null $modelClone = null;
 
+	private $exemptedClasses = [
+		//Media::class,
+		User::class,
+		ProgramType::class
+	];
+
+	private $beforeCloneCallback = null;
+
+	private $currentTeam;
+
 	/**
 	 * DI
 	 *
@@ -47,11 +63,18 @@ class Cloner {
 	public function __construct(
 		?AttachmentAdapter $attachment = null,
 		?Events $events = null,
-		?ModelClone $modelClone = null
+		?ModelClone $modelClone = null,
 	) {
 		$this->attachment = $attachment;
 		$this->events = $events;
 		$this->modelClone = $modelClone;
+	}
+
+	public function setBeforeCloneCallback(
+		?callable $beforeCloneCallback = null
+	)
+	{
+		$this->beforeCloneCallback = $beforeCloneCallback;
 	}
 
 	/**
@@ -96,6 +119,15 @@ class Cloner {
 			return $model;
 		}
 
+		try{
+			$result = is_callable($this->beforeCloneCallback) ? call_user_func($this->beforeCloneCallback, $model) : null;
+		}catch(\Error $e){
+			/*Log::error("Caught Exception in beforeCloneCallback", [
+				"e" => $e
+			]);*/
+			return $model;
+		}
+
 		//uncloned model, do whole cloning process
 		$clone = $this->cloneModel($model);
 
@@ -113,15 +145,27 @@ class Cloner {
 			]);
 		}
 
-		DB::transaction(function () use($clone, $model, $relation) {
-			if ($relation && !is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
-				$relation->save($clone);
-			} else {
-				$clone->save();
-			}
+		try {
+			DB::transaction(function () use($clone, $model, $relation) {
+				if ($relation && !is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
+					$relation->save($clone);
+				} else {
+					$clone->save();
+				}
 
-			$this->saveCloneProcess($model, $clone);
-		}, 5);
+				$this->saveCloneProcess($model, $clone);
+			}, 5);
+		}catch(UniqueConstraintViolationException $e)
+		{
+			Log::error("UniqueConstraintViolationException trying to save model",[
+				"model" => $model,
+				"clone" => $clone,
+				"relation" => $relation,
+				"recursive" => $recursive,
+				"attr" => $attr,
+				"e" => $e
+			]);
+		}
 
 		
 		//ToDo: Queue?
@@ -135,6 +179,7 @@ class Cloner {
 
 	private function isCloneExempt($model)
 	{
+		if(in_array(get_class($model), $this->exemptedClasses)) return true;
 		if(!$this->modelClone) return false;
 
 		return $this->modelClone->cloneExempts(get_class($model))->where([
@@ -330,9 +375,12 @@ class Cloner {
 	protected function duplicateRelation($model, $relation_name, $clone) {
 		$relation = call_user_func([$model, $relation_name]);
 		if (is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsToMany')) {
-			//$this->duplicatePivotedRelation($relation, $relation_name, $clone);
 			$this->duplicatePivotedAndRelated($relation, $relation_name, $clone);
-		} else $this->duplicateDirectRelation($relation, $relation_name, $clone);
+		} else if(!is_a($relation, 'Illuminate\Database\Eloquent\Relations\MorphTo') || filled($model->$relation_name)) {
+			//nullable morphto's throw an error if null. Skip null morphTo's, nothing to clone anyways
+			if($relation_name == "media") dd($relation_name, $model, $clone, $model->$relation_name);
+			$this->duplicateDirectRelation($relation, $relation_name, $clone);
+		}
 	}
 
 	protected function duplicatePivotedAndRelated($relation, $relation_name, $clone) {
@@ -345,7 +393,7 @@ class Cloner {
 		// Loop trough current relations and attach to clone
 		$relation->as('pivot')->get()->each(function ($related) use ($clone, $relation_name, $relation) 
 		{
-			//$this->checkBoundary($related, $clone, $relation, $relation_name);
+			$this->checkBoundary($related, $clone, $relation, $relation_name);
 
 			//duplicate if available, otherwise just copy
 			$duplicatedRelated = $this->duplicate($related);
@@ -398,7 +446,7 @@ class Cloner {
 	 */
 	protected function duplicateDirectRelation($relation, $relation_name, $clone) {
 		$relation->get()->each(function($foreign) use ($clone, $relation_name, $relation) {
-			//$this->checkBoundary($foreign, $clone, $relation, $relation_name);
+			$this->checkBoundary($foreign, $clone, $relation, $relation_name);
 
 			$clonedForeign = $this->duplicate($foreign, $clone->$relation_name());
 
@@ -409,9 +457,15 @@ class Cloner {
 		});
 	}
 
-	/*
+	
 	private function checkBoundary($foreign, $clone, $relation, $relation_name)
 	{
+		return;
+		if(!$this->currentTeam)
+		{
+			$this->currentTeam = Team::find($this->modelClone->additional_attributes->team_id);
+		}
+
 		if($this->currentTeam && 
 			get_class($foreign) === get_class($this->currentTeam) && 
 			!$foreign->is($this->currentTeam) && 
@@ -439,7 +493,6 @@ class Cloner {
 			throw new \Error("Cloning Foreign with different team");
 		}
 	}
-		*/
 
 
 	private function morphModelClones($model)

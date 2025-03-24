@@ -2,10 +2,13 @@
 
 // Deps
 
+use App\Models\Contact;
 use App\Models\Media;
 use App\Models\ModelClone;
 use App\Models\ModelCloneProgress;
 use App\Models\PersonType;
+use App\Models\Program;
+use App\Models\ProgramItem;
 use App\Models\ProgramType;
 use App\Models\Team;
 use App\Models\User;
@@ -94,23 +97,7 @@ class Cloner {
 	) {
 		if($modelClone && $modelClone->id) $this->modelClone = $modelClone;
 
-		//Model is source model that has already been cloned; return existing clone
-		$existingModel = $this->fetchExistingClone($model);
-		
-		//Model should not be cloned but existing relations be kept
-		if(empty($existingModel) && $this->isCloneExempt($model)) 
-		{
-			$existingModel = $model;
-		}
-	
-		if(filled($existingModel))
-		{
-			if ($relation && !is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
-				$relation->save($existingModel);
-			}
-			return $existingModel;
-		}
-
+		//1st: Check if model is a clone
 		if(filled($this->modelClone) && $this->isClone($model)){
 			//Model is cloned model that has already been cloned, return itself
 			if ($relation && !is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
@@ -119,6 +106,38 @@ class Cloner {
 			return $model;
 		}
 
+		//2nd: Check if model has been cloned
+		//Model is source model that has already been cloned; return existing clone
+		$existingModel = $this->fetchExistingClone($model);
+		//Model should not be cloned but existing relations be kept
+		if(empty($existingModel) && $this->isCloneExempt($model)) 
+		{
+			$existingModel = $model;
+		}
+		if(filled($existingModel))
+		{
+			if($existingModel->is(ProgramItem::find(15743)))
+			{
+				Log::error("ExistingModel is old ProgramItem", [
+					"model" => $model,
+					"relation" => $relation,
+					"parent" => $relation?->getParent(),
+					"related" => $relation?->getRelated(),
+					"existingModel" => $existingModel,
+					"isCloneExempt" => $this->isCloneExempt($model),
+					"e" => new \Error("ExistingModel is old ProgramItem")
+				]);
+				//throw new \Error("Existing Model is old Program");
+			}
+
+			if ($relation && !is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
+				$relation->save($existingModel);
+			}
+			return $existingModel;
+		}
+
+
+		//3rd: Clone model
 		try{
 			$result = is_callable($this->beforeCloneCallback) ? call_user_func($this->beforeCloneCallback, $model) : null;
 		}catch(\Error $e){
@@ -132,21 +151,21 @@ class Cloner {
 		$clone = $this->cloneModel($model);
 
 		//TODO if $model/$clone are Pivots && filled($attr), then ->fill($attr)
+		DB::transaction(function () use($clone, $model, $relation, $attr, $recursive) {
 
-		try {
-			$this->dispatchOnCloningEvent($clone, $relation, $model, null, $attr);
-		}catch(\Webmozart\Assert\InvalidArgumentException $e)
-		{
-			Log::error("Caught Webmozart Invalid Argument Exception", [
-				"clone" => $clone,
-				"model" => $model,
-				"relation" => $relation,
-				"error" => $e
-			]);
-		}
+			try {
+				$this->dispatchOnCloningEvent($clone, $relation, $model, null, $attr);
+			}catch(\Webmozart\Assert\InvalidArgumentException $e)
+			{
+				Log::error("Caught Webmozart Invalid Argument Exception", [
+					"clone" => $clone,
+					"model" => $model,
+					"relation" => $relation,
+					"error" => $e
+				]);
+			}
 
-		try {
-			DB::transaction(function () use($clone, $model, $relation) {
+			try {
 				if ($relation && !is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
 					$relation->save($clone);
 				} else {
@@ -154,23 +173,34 @@ class Cloner {
 				}
 
 				$this->saveCloneProcess($model, $clone);
-			}, 5);
-		}catch(UniqueConstraintViolationException $e)
-		{
-			Log::error("UniqueConstraintViolationException trying to save model",[
-				"model" => $model,
-				"clone" => $clone,
-				"relation" => $relation,
-				"recursive" => $recursive,
-				"attr" => $attr,
-				"e" => $e
-			]);
-		}
-
+			}catch(UniqueConstraintViolationException $e)
+			{
+				Log::error("UniqueConstraintViolationException trying to save model",[
+					"model" => $model,
+					"clone" => $clone,
+					"relation" => $relation,
+					"recursive" => $recursive,
+					"attr" => $attr,
+					"e" => $e
+				]);
+			}
+		}, 5);
 		
 		//ToDo: Queue?
 		$this->cloneMedia($model, $clone);
-		if($recursive) $this->cloneRelations($model, $clone);
+		//if($recursive) $this->cloneRelations($model, $clone);
+		$this->cloneRelations($model, $clone);
+
+		/*if($model->is(Program::find(8335)))
+		{
+			Log::error("Cloned Program 8335", [
+				"model" => $model->withoutRelations([]),
+				"relation" => $relation,
+				"recursive" => $recursive,
+				"clone" => $clone->withoutRelations([])
+			]);
+			throw new \Error("Cloned Program 8335");
+		}*/
 
 		$this->dispatchOnClonedEvent($clone, $model);
 
@@ -378,7 +408,6 @@ class Cloner {
 			$this->duplicatePivotedAndRelated($relation, $relation_name, $clone);
 		} else if(!is_a($relation, 'Illuminate\Database\Eloquent\Relations\MorphTo') || filled($model->$relation_name)) {
 			//nullable morphto's throw an error if null. Skip null morphTo's, nothing to clone anyways
-			if($relation_name == "media") dd($relation_name, $model, $clone, $model->$relation_name);
 			$this->duplicateDirectRelation($relation, $relation_name, $clone);
 		}
 	}
@@ -391,9 +420,9 @@ class Cloner {
 		if ($this->write_connection) return;
 
 		// Loop trough current relations and attach to clone
-		$relation->as('pivot')->get()->each(function ($related) use ($clone, $relation_name, $relation) 
+		$relation->as('pivot')->get()->each(function ($related) use ($clone, $relation_name) 
 		{
-			$this->checkBoundary($related, $clone, $relation, $relation_name);
+			//$this->checkBoundary($related, $clone, $relation, $relation_name);
 
 			//duplicate if available, otherwise just copy
 			$duplicatedRelated = $this->duplicate($related);
@@ -445,14 +474,33 @@ class Cloner {
 	 * @return void
 	 */
 	protected function duplicateDirectRelation($relation, $relation_name, $clone) {
-		$relation->get()->each(function($foreign) use ($clone, $relation_name, $relation) {
-			$this->checkBoundary($foreign, $clone, $relation, $relation_name);
+		$relation->get()->each(function($foreign) use ($clone, $relation_name) {
+			//$this->checkBoundary($foreign, $clone, $relation, $relation_name);
 
 			$clonedForeign = $this->duplicate($foreign, $clone->$relation_name());
+			/*if($clonedForeign->is(Contact::find(49849)) && $clone->is(ProgramItem::find(15743)))
+			{
+				Log::error("Caught problematic clone in duplicateDirectRelation ->duplicate", [
+					"clone" => $clone->setRelations([]),
+					"relationName" => $relation_name,
+					"sourceForeign" => $foreign,
+					"clonedForeign" => $clonedForeign
+				]);
+			}*/
 
 			if (is_a($clone->$relation_name(), 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
 				$clone->$relation_name()->associate($clonedForeign);
 				$clone->save();
+
+				/*if($clone->is(ProgramItem::find(15743)) && $clonedForeign->is(Contact::find(49849)))
+				{
+					Log::error("Caught problematic clone in duplicateDirectRelation", [
+						"clone" => $clone->setRelations([]),
+						"relationName" => $relation_name,
+						"sourceForeign" => $foreign,
+						"clonedForeign" => $clonedForeign
+					]);
+				}*/
 			}
 		});
 	}

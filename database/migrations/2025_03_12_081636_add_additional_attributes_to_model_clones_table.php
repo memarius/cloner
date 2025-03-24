@@ -11,10 +11,8 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('model_clones', function (Blueprint $table) {
-            $table->id();
-            $table->timestamps();
-            $table->foreignId("user_id")->constrained()->cascadeOnDelete();
+        Schema::table('model_clones', function (Blueprint $table) {
+            $table->json("additional_attributes")->nullable()->comment("Additional information that can be retrieved 'globally' within the cloning process");
         });
     }
 
@@ -23,6 +21,8 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('model_clones');
+        Schema::table('model_clones', function (Blueprint $table) {
+            $table->dropColumn("additional_attributes");
+        });
     }
 };

@@ -1,6 +1,6 @@
 <?php
 
-namespace Bkwld\Cloner\Models;
+namespace App\Models;
 
 use Illuminate\Database\Eloquent\Casts\AsArrayObject;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -21,6 +21,21 @@ class ModelClone extends Model
     * 
     */
 
+    public function getCloneBySource(Model $source)
+    {
+        return $this->modelCloneProgresses()->where([
+            ["model_type", "=", get_class($source)],
+            ["source_id", "=", $source->getKey()]
+        ])->first()->clone ?? null;
+    }
+
+    public function getSourceByClone(Model $clone)
+    {
+        return $this->modelCloneProgresses()->where([
+            ["model_type", "=", get_class($clone)],
+            ["clone_id", "=", $clone->getKey()]
+        ])->first()->source ?? null;
+    }
 
     public function modelCloneProgresses()
     {

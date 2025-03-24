@@ -2,7 +2,8 @@
 
 // Deps
 use App;
-use App\Models\ModelClone;
+use Bkwld\Cloner\Models\ModelClone;
+use Bkwld\Cloner\Models\ModelCloneProgress;
 use Illuminate\Database\Eloquent\Relations\MorphToMany;
 
 /**
@@ -13,12 +14,12 @@ trait Cloneable {
 
 	public function modelClones()
 	{
-		return $this->morphMany(related: App\Models\ModelCloneProgress::class, name: 'source', type: 'model_type', id: 'source_id');
+		return $this->morphMany(related: ModelCloneProgress::class, name: 'source', type: 'model_type', id: 'source_id');
 	}
 
 	public function clonedBy()
 	{
-		return $this->morphOne(related: App\Models\ModelCloneProgress::class, name: 'clone', type: 'model_type', id: 'clone_id');	
+		return $this->morphOne(related: ModelCloneProgress::class, name: 'clone', type: 'model_type', id: 'clone_id');	
 	}
 
 	public function cloneExempted(): MorphToMany

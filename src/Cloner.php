@@ -2,18 +2,9 @@
 
 // Deps
 
-use App\Models\Contact;
-use App\Models\Media;
-use App\Models\ModelClone;
-use App\Models\ModelCloneProgress;
-use App\Models\PersonType;
-use App\Models\Program;
-use App\Models\ProgramItem;
-use App\Models\ProgramType;
-use App\Models\Team;
-use App\Models\User;
+use Bkwld\Cloner\Models\ModelClone;
+use Bkwld\Cloner\Models\ModelCloneProgress;
 use Illuminate\Contracts\Events\Dispatcher as Events;
-use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\Pivot;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\App;
@@ -22,8 +13,6 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
-
-use function PHPUnit\Framework\callback;
 
 /**
  * Core class that traverses a model's relationships and replicates model
@@ -47,12 +36,6 @@ class Cloner {
 	private $write_connection;
 
 	private ModelClone|null $modelClone = null;
-
-	private $exemptedClasses = [
-		//Media::class,
-		User::class,
-		ProgramType::class
-	];
 
 	private $beforeCloneCallback = null;
 
@@ -116,20 +99,6 @@ class Cloner {
 		}
 		if(filled($existingModel))
 		{
-			if($existingModel->is(ProgramItem::find(15743)))
-			{
-				Log::error("ExistingModel is old ProgramItem", [
-					"model" => $model,
-					"relation" => $relation,
-					"parent" => $relation?->getParent(),
-					"related" => $relation?->getRelated(),
-					"existingModel" => $existingModel,
-					"isCloneExempt" => $this->isCloneExempt($model),
-					"e" => new \Error("ExistingModel is old ProgramItem")
-				]);
-				//throw new \Error("Existing Model is old Program");
-			}
-
 			if ($relation && !is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
 				$relation->save($existingModel);
 			}
@@ -141,9 +110,6 @@ class Cloner {
 		try{
 			$result = is_callable($this->beforeCloneCallback) ? call_user_func($this->beforeCloneCallback, $model) : null;
 		}catch(\Error $e){
-			/*Log::error("Caught Exception in beforeCloneCallback", [
-				"e" => $e
-			]);*/
 			return $model;
 		}
 
@@ -188,20 +154,7 @@ class Cloner {
 		
 		//ToDo: Queue?
 		$this->cloneMedia($model, $clone);
-		//if($recursive) $this->cloneRelations($model, $clone);
 		$this->cloneRelations($model, $clone);
-
-		/*if($model->is(Program::find(8335)))
-		{
-			Log::error("Cloned Program 8335", [
-				"model" => $model->withoutRelations([]),
-				"relation" => $relation,
-				"recursive" => $recursive,
-				"clone" => $clone->withoutRelations([])
-			]);
-			throw new \Error("Cloned Program 8335");
-		}*/
-
 		$this->dispatchOnClonedEvent($clone, $model);
 
 		return $clone;
@@ -209,8 +162,14 @@ class Cloner {
 
 	private function isCloneExempt($model)
 	{
-		if(in_array(get_class($model), $this->exemptedClasses)) return true;
 		if(!$this->modelClone) return false;
+
+		if(!empty($this->modelClone->additional_attributes->exempted_classes) && 
+			is_array($this->modelClone->additional_attributes->exempted_classes) &&
+			in_array(get_class($model), $this->modelClone->additional_attributes->exempted_classes)
+		) {
+			return true;
+		}
 
 		return $this->modelClone->cloneExempts(get_class($model))->where([
 			["exemptable_id", $model->getKey()],
@@ -327,17 +286,21 @@ class Cloner {
         foreach($source->getMedia('*') as $mediaItem)
         {
             try {
-                $mediaItem->copy($clone, $mediaItem->collection_name, $mediaItem->disk);
+                $clonedMedia = $mediaItem->copy($clone, $mediaItem->collection_name, $mediaItem->disk);
+				$this->modelClone->modelCloneProgresses()->create([
+					"model_type" => get_class($clonedMedia),
+					"source_id" => $mediaItem->getKey(),
+					"clone_id" => $clonedMedia->getKey()
+				]);
             }catch(\Exception $e)
             {
-                Log::error("Could not copy MediaItem for class {$class}", [
+                Log::error("Could not copy MediaItem for class {get_class($clone)}", [
                     "mediaId" => $mediaItem->id,
                     "sourceModelId" => $source->id,
                     "clonedModelId" => $clone->id,
                     "exception" => $e
                 ]);
             }
-            
         }
 	}
 
@@ -422,8 +385,6 @@ class Cloner {
 		// Loop trough current relations and attach to clone
 		$relation->as('pivot')->get()->each(function ($related) use ($clone, $relation_name) 
 		{
-			//$this->checkBoundary($related, $clone, $relation, $relation_name);
-
 			//duplicate if available, otherwise just copy
 			$duplicatedRelated = $this->duplicate($related);
 			$duplicatedRelated->save();
@@ -438,9 +399,6 @@ class Cloner {
 					$related->pivot->getUpdatedAtColumn()
 				]);
 	
-				/*foreach (array_keys($pivot_attributes) as $attributeKey) {
-					$pivot_attributes[$attributeKey] = $foreign->pivot->getAttribute($attributeKey);
-				}*/
 	
 				if ($related->pivot->incrementing) {
 					unset($pivot_attributes[$related->pivot->getKeyName()]);
@@ -455,7 +413,7 @@ class Cloner {
 			}else {
 				//Custom Pivot Class that could potentially have custom clone attributes/relationships itself
 				$fullPivotModel = $related->pivot->fresh();	//pivot might not have all attributes loaded from database before this. Could be moved to duplicate function(?)
-				$duplicatedPivot = $this->duplicate($fullPivotModel, false, [
+				$this->duplicate($fullPivotModel, false, [
 					$related->pivot->getForeignKey() => $clone->id,
 					$related->pivot->getRelatedKey() => $duplicatedRelated->id
 				]);
@@ -475,73 +433,15 @@ class Cloner {
 	 */
 	protected function duplicateDirectRelation($relation, $relation_name, $clone) {
 		$relation->get()->each(function($foreign) use ($clone, $relation_name) {
-			//$this->checkBoundary($foreign, $clone, $relation, $relation_name);
 
 			$clonedForeign = $this->duplicate($foreign, $clone->$relation_name());
-			/*if($clonedForeign->is(Contact::find(49849)) && $clone->is(ProgramItem::find(15743)))
-			{
-				Log::error("Caught problematic clone in duplicateDirectRelation ->duplicate", [
-					"clone" => $clone->setRelations([]),
-					"relationName" => $relation_name,
-					"sourceForeign" => $foreign,
-					"clonedForeign" => $clonedForeign
-				]);
-			}*/
 
 			if (is_a($clone->$relation_name(), 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
 				$clone->$relation_name()->associate($clonedForeign);
 				$clone->save();
-
-				/*if($clone->is(ProgramItem::find(15743)) && $clonedForeign->is(Contact::find(49849)))
-				{
-					Log::error("Caught problematic clone in duplicateDirectRelation", [
-						"clone" => $clone->setRelations([]),
-						"relationName" => $relation_name,
-						"sourceForeign" => $foreign,
-						"clonedForeign" => $clonedForeign
-					]);
-				}*/
 			}
 		});
 	}
-
-	
-	private function checkBoundary($foreign, $clone, $relation, $relation_name)
-	{
-		return;
-		if(!$this->currentTeam)
-		{
-			$this->currentTeam = Team::find($this->modelClone->additional_attributes->team_id);
-		}
-
-		if($this->currentTeam && 
-			get_class($foreign) === get_class($this->currentTeam) && 
-			!$foreign->is($this->currentTeam) && 
-			!$foreign->is($this->currentTeam->modelClones()->where('model_clone_id', $this->modelClone->id)->first()->clone)
-		)
-		//if(get_class($foreign) == PersonType::class && $this->currentTeam && $foreign->id == 2255) 
-		{
-			Log::error("duplicatePivotedAndRelated: Cloning Team that is not supposed to be cloned.", [
-				"relation" => $relation,
-				"relationName" => $relation_name,
-				"clone" => $clone,
-				"related" => $foreign
-			]);
-			throw new \Error("Cloning Team that is not supposed to be cloned");
-		}
-
-		if(filled($foreign->team) && !$foreign->team->is($this->currentTeam) && !$foreign->team->is($this->currentTeam->modelClones()->where('model_clone_id', $this->modelClone->id)->first()->clone))
-		{
-			Log::error("Trying to duplicate a foreign that does not have the same team.", [
-				"relation" => $relation,
-				"relationName" => $relation_name,
-				"clone" => $clone,
-				"related" => $foreign
-			]);
-			throw new \Error("Cloning Foreign with different team");
-		}
-	}
-
 
 	private function morphModelClones($model)
 	{

@@ -32,6 +32,14 @@ class ServiceProvider extends LaravelServiceProvider {
 				$app['upchuck.disk']
 			);
 		});
+
+		$this->publishes([
+			__DIR__.'/../config/cloner.php' => config_path('cloner.php'),
+		]);
+
+		$this->mergeConfigFrom(
+			__DIR__.'/../config/cloner.php', 'cloner'
+		);
 	}
 
 	/**

@@ -37,9 +37,12 @@ class Cloner {
 
 	private ModelClone|null $modelClone = null;
 
+	/**
+	 * Optional Callback to run before cloning.
+	 * Can throw an \Error() to skip cloning
+	 * @var callable
+	 */
 	private $beforeCloneCallback = null;
-
-	private $currentTeam;
 
 	/**
 	 * DI
@@ -119,17 +122,7 @@ class Cloner {
 		//TODO if $model/$clone are Pivots && filled($attr), then ->fill($attr)
 		DB::transaction(function () use($clone, $model, $relation, $attr, $recursive) {
 
-			try {
-				$this->dispatchOnCloningEvent($clone, $relation, $model, null, $attr);
-			}catch(\Webmozart\Assert\InvalidArgumentException $e)
-			{
-				Log::error("Caught Webmozart Invalid Argument Exception", [
-					"clone" => $clone,
-					"model" => $model,
-					"relation" => $relation,
-					"error" => $e
-				]);
-			}
+			$this->dispatchOnCloningEvent($clone, $relation, $model, null, $attr);
 
 			try {
 				if ($relation && !is_a($relation, 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
